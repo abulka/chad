@@ -361,6 +361,33 @@ def _code_block(text: str) -> str:
     return f"{fence}\n{body}\n{fence}"
 
 
+_FENCE_LINE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _balance_fence(text: str) -> str:
+    """Append a closing fence if `text` leaves one open, else return it unchanged.
+
+    CommonMark: a fence opens on a line of 3+ backticks/tildes (at most 3 spaces indent)
+    with an optional info string, and closes only on a line of the same character, at
+    least as long, with nothing but whitespace after. Small models nest same-character
+    fences (` ```markdown ` holding ` ```python `), which leaves the outer block open and
+    swallows every section that follows it in the export; this closes the block so the
+    rest of the document survives."""
+    opening = None  # (fence char, run length) while a fence is open
+    for line in text.split("\n"):
+        m = _FENCE_LINE_RE.match(line)
+        if not m:
+            continue
+        run, rest = m.group(1), m.group(2)
+        if opening is None:
+            opening = (run[0], len(run))
+        elif run[0] == opening[0] and len(run) >= opening[1] and not rest.strip():
+            opening = None
+    if opening is None:
+        return text
+    return text.rstrip("\n") + "\n" + opening[0] * opening[1]
+
+
 def last_assistant_prose(messages: list) -> str:
     """The newest assistant turn's prose, reasoning and tool-call syntax removed.
 
@@ -393,11 +420,11 @@ def to_markdown(messages: list, *, title: str = "chad session",
         if role == "system":
             continue
         if role == "user":
-            out += ["## User", "", content.strip(), ""]
+            out += ["## User", "", _balance_fence(content.strip()), ""]
         elif role == "assistant":
             prose = assistant_prose(content)
             if prose:
-                out += ["## Assistant", "", prose, ""]
+                out += ["## Assistant", "", _balance_fence(prose), ""]
             for call in _TOOL_CALL_RE.findall(content):
                 out += ["### Tool call", "", _code_block(call.strip()), ""]
         elif role == "tool":

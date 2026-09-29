@@ -7,6 +7,7 @@ Run: `uv run python tests/test_session.py`
 import json
 import os
 import pathlib
+import re
 import tempfile
 import time
 
@@ -269,6 +270,50 @@ def test_to_markdown_drops_reasoning_keeps_tools(tmp_path):
     check("tool result kept", "### Tool: read" in md and "line two" in md)
 
 
+_FENCE_LINE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _inside_fence(doc, heading):
+    """Whether `heading` sits inside an open code fence in `doc` (CommonMark rules)."""
+    opening = None
+    for line in doc.splitlines():
+        m = _FENCE_LINE.match(line)
+        if m:
+            run, rest = m.group(1), m.group(2)
+            if opening is None:
+                opening = (run[0], len(run))
+            elif run[0] == opening[0] and len(run) >= opening[1] and not rest.strip():
+                opening = None
+        elif line.strip() == heading:
+            return opening is not None
+    return False
+
+
+def test_to_markdown_closes_a_fence_the_model_left_open():
+    # A model that nests same-character fences leaves the outer block open; without a
+    # repair every later section collapses into that code block (the export "out of
+    # whack" bug). The export closes it so the structure survives; balanced text is
+    # returned byte-for-byte.
+    prose = ("Sample:\n\n```markdown\n# H1\n\n```python\nprint(1)\n```\n\n"
+             "[link](https://x)\n```\n\nWant more?\n")
+    messages = [
+        {"role": "user", "content": "show markdown"},
+        {"role": "assistant", "content": prose + "<tool_call><function=done>"
+                                                   "<parameter=summary>ok</parameter>"
+                                                   "</function></tool_call>"},
+        {"role": "tool", "name": "done", "content": "done."},
+    ]
+    md = session.to_markdown(messages, title="t")
+    check("tool call stays outside the prose fence",
+          not _inside_fence(md, "### Tool call"), md)
+    check("tool result stays outside the prose fence",
+          not _inside_fence(md, "### Tool: done"), md)
+    check("balanced input left verbatim",
+          session._balance_fence("```\nx\n```\n") == "```\nx\n```\n")
+    check("plain text left verbatim",
+          session._balance_fence("# H\n\nbody\n") == "# H\n\nbody\n")
+
+
 def test_export_markdown_masks_secrets_and_writes_0600(tmp_path):
     # The in-memory transcript holds the real token; the on-disk export must not, and it
     # must not be world-readable in a repo.
@@ -318,6 +363,7 @@ if __name__ == "__main__":
                  test_persisted_copy_masks_known_prefix_secrets,
                  test_last_assistant_prose_skips_tool_only_and_reasoning_only_turns,
                  test_to_markdown_drops_reasoning_keeps_tools,
+                 test_to_markdown_closes_a_fence_the_model_left_open,
                  test_export_markdown_masks_secrets_and_writes_0600):
         # Same isolation conftest gives each test under pytest.
         with tempfile.TemporaryDirectory() as home, pytest.MonkeyPatch.context() as mp:
