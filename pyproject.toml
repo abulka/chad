@@ -65,6 +65,15 @@ dependencies = [
     "numpy>=1.26,<3",
     "huggingface-hub>=1.22.0", # first-run model download (cli.py/engine.py); imported directly, not just transitively
     "prompt_toolkit>=3.0.43",
+    # Assistant Markdown -> ANSI in the TUI (src/chad/markdown.py): the model writes
+    # Markdown, and without a parser the transcript shows the raw `**bold**`, `#` and
+    # backtick fences. rich renders to a StringIO — never the live terminal — and the
+    # TUI appends the captured string to its existing scrollback buffer, so the
+    # single-writer path (tui._pending) is unchanged. rich drags pygments and
+    # markdown-it-py with it; render._highlight_code keeps its own import guard, so the
+    # diff/preview path is untouched. Capped <16: rich.Markdown and rich.Theme are the
+    # API chad builds on, gated against the 15.x line uv.lock resolves.
+    "rich>=15,<16",
     "tree-sitter>=0.26.0",
     "tree-sitter-language-pack>=1.12.2",
     # Single 2.x code path (the 1.x cap left with serena-agent, which hard-pinned mcp
