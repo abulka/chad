@@ -8,6 +8,7 @@ so we don't have to construct an Engine/Agent.
 """
 import asyncio
 import os
+import re
 import sys
 import threading
 import time
@@ -63,6 +64,8 @@ def _bare_tui():
     t._prefilled = 0
     t._prefill_total = 0
     t._think_capped = 0
+    t._md_buf = []
+    t._markdown = False  # raw-token path unless a test opts in
     return t
 
 
@@ -612,3 +615,72 @@ def test_fresh_agent_clears_the_pinned_todo_panel():
     tui._todos = [{"content": "from the previous session", "status": "in_progress"}]
     assert tui._fresh_agent("normal") is True
     assert tui._todos == []
+
+
+# ---------------------------------------------------------------------------
+# Markdown rendering. Assistant `stream` deltas are buffered per message and rendered
+# to ANSI once the message ends (a tool/activity emit, or turn end), so the transcript
+# shows styled prose while the live gauges stay out of the buffer. Off (default here,
+# and everywhere under CHAD_NO_MARKDOWN) the raw-token path is unchanged.
+# ---------------------------------------------------------------------------
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;[^\x1b]*\x1b\\")
+
+
+def _plain(s: str) -> str:
+    return _ANSI.sub("", s)
+
+
+def test_markdown_stream_buffers_until_message_end():
+    t = _bare_tui()
+    t._markdown = True
+    t._emit("stream", "# Hea")
+    t._emit("stream", "ding\n")
+    assert t._pending == []          # nothing raw reaches scrollback while buffering
+    assert t._md_buf                 # ...the message is held for the final render
+    t._emit("tool", "Run ls")        # message boundary
+    out = "".join(t._pending)
+    assert "\x1b[" in out and "Heading" in _plain(out)
+    assert out.index("Heading") < out.index("Run ls")  # prose renders before the tool
+
+
+def test_markdown_live_gauges_do_not_flush():
+    # gen/ctx fire mid-generation; flushing on them would render a message in pieces.
+    t = _bare_tui()
+    t._markdown = True
+    t._emit("stream", "hello")
+    t._emit("gen", "16")
+    t._emit("ctx", "100")
+    assert t._pending == [] and t._md_buf == ["hello"]
+
+
+def test_markdown_off_stream_is_raw_and_unbuffered():
+    t = _bare_tui()                  # _markdown False
+    t._emit("stream", "**raw**")
+    assert t._pending == ["**raw**"] and t._md_buf == []
+
+
+def test_markdown_toggle_flushes_and_flips():
+    t = _bare_tui()
+    t._markdown = True
+    t._emit("stream", "**bold**")
+    t._toggle_markdown()
+    assert t._markdown is False
+    out = "".join(t._pending)
+    assert "bold" in _plain(out)     # buffered message rendered, not dropped
+    assert "markdown rendering off" in out
+
+
+def test_worker_renders_final_message_at_turn_end(monkeypatch):
+    monkeypatch.delenv("CHAD_NO_MARKDOWN", raising=False)
+    tui, fake = _worker_tui()
+    assert tui._markdown is True
+    fake.on_call = lambda _m: tui._emit("stream", "# Answer\n\n**done**\n")
+    th = _start_worker(tui)
+    tui._queue.append("hi")
+    tui._wake.set()
+    assert _spin_until(lambda: fake.saved == 1)
+    _stop_worker(tui, th)
+    out = "".join(tui._pending)
+    assert "\x1b[" in out
+    assert "Answer" in _plain(out) and "done" in _plain(out)
