@@ -91,6 +91,13 @@ MODE_STYLE = {"normal": "status.normal", "auto": "status.auto", "yolo": "status.
 _CONFIRM_MAX_LINES = 10
 _CONFIRM_MAX_CHARS = 600
 
+# Emit kinds whose arrival means the current assistant message is finished and its
+# buffered prose can be rendered: tool/activity output, or the next message's reasoning.
+# The live gauges (ctx/gen/prefill/status/thinkcap/todos) fire *during* generation and
+# must NOT flush, or a message would render in pieces.
+_MD_FLUSH_KINDS = frozenset(
+    {"think", "tool", "add", "del", "error", "muted", "info", "user"})
+
 
 def _confirm_body_lines(name: str, args) -> list:
     """The approval preview as real lines, bounded in both directions. Unlike the
@@ -214,6 +221,7 @@ SLASH_COMMANDS = [
     ("/mcp login", "authenticate an MCP server (OAuth)"),
     ("/compact", "reclaim context now"),
     ("/ctx", "where the context window is going, in tokens"),
+    ("/markdown", "toggle rendered Markdown in the transcript"),
     ("/undo", "revert files to the last edit checkpoint"),
     ("/restore", "list edit checkpoints; /restore <hash> reverts to one"),
     ("/resume", "list recent sessions; /resume <n> forks one"),
@@ -408,6 +416,8 @@ class TUI:
             self._model_ready.set()
 
         self._pending = []                 # ANSI chunks awaiting flush to stdout
+        self._md_buf = []                  # prose of the current assistant message (Markdown on)
+        self._markdown = not config.flag("CHAD_NO_MARKDOWN")
         self._todos = []                   # live write_todos list for the pinned panel
         self._lock = threading.Lock()
         self._queue = deque()              # user messages awaiting the worker
@@ -522,6 +532,17 @@ class TUI:
         self._dirty = True
 
     def _apply_emit(self, kind: str, text: str):
+        if kind == "stream" and self._markdown:
+            # Buffer the message; it renders once, when this message ends, so the
+            # transcript shows styled Markdown instead of a raw token echo. The live
+            # ↓ counter on the status line still tracks progress.
+            self._phase = "Responding"
+            self._md_buf.append(text)
+            return
+        if kind in _MD_FLUSH_KINDS:
+            # A tool/activity or next-message emit closes the current assistant message:
+            # render its prose before whatever this kind appends, so order is preserved.
+            self._flush_markdown()
         # Map activity to the spinner verb, then queue the transcript fragment (if any).
         if kind == "think":
             self._phase = "Thinking"
@@ -587,6 +608,40 @@ class TUI:
         out = f"\n{C_YEL}» {lines[0]}{C_RST}\n"
         out += "".join(f"{C_YEL}  {ln}{C_RST}\n" for ln in lines[1:])
         return out
+
+    def _flush_markdown(self):
+        """Render the buffered assistant message to ANSI and queue it.
+
+        Called when a non-stream transcript kind arrives (the message boundary) and at
+        turn end. Runs on the worker thread and appends under the same lock as every
+        other fragment, so the UI refresher stays the only stdout writer."""
+        if not self._md_buf:
+            return
+        text = "".join(self._md_buf)
+        self._md_buf.clear()
+        try:
+            from .markdown import render_markdown
+            rendered = render_markdown(text, self._markdown_width())
+        except Exception:  # noqa: BLE001 — a render failure must not lose the answer
+            rendered = text
+        if rendered:
+            with self._lock:
+                self._pending.append(rendered + "\n")
+
+    def _markdown_width(self) -> int:
+        """Columns to reflow Markdown to: the live app's output size when running, a
+        stable fallback for tests and the pre-run state (no app/output yet)."""
+        try:
+            return self.app.output.get_size().columns
+        except Exception:  # noqa: BLE001 — bare-instance tests have no app/output
+            return 100
+
+    def _toggle_markdown(self):
+        """`/markdown` — flip rendered assistant prose on/off. Flush first so a toggle
+        mid-message cannot drop or split the message already buffered."""
+        self._flush_markdown()
+        self._markdown = not self._markdown
+        self._emit("info", f"markdown rendering {'on' if self._markdown else 'off'}.")
 
     def _drain_steering(self):
         """Hand queued mid-run steering to the agent (called from the worker thread
@@ -892,6 +947,7 @@ class TUI:
         # The new Agent drops the tool-side todo list; the pinned panel reads this copy,
         # so clear it too or the old plan stays on screen with nothing behind it.
         self._todos = []
+        self._md_buf.clear()           # no half-rendered message survives a reset
         self._interrupt.clear()        # the new turn must start un-interrupted
         self.engine.reset()
         return True
@@ -1173,6 +1229,11 @@ class TUI:
                 self._emit("info", f"  [context breakdown unavailable: "
                                    f"{type(e).__name__}: {e}]")
             return False
+        if text == "/markdown":
+            # Display-only, and it flushes the buffered message first, so it is safe
+            # mid-turn like /ctx rather than mutating shared state like /compact.
+            self._toggle_markdown()
+            return False
         if text == "/undo" or text == "/restore" or text.startswith("/restore "):
             # Checkout mutates workspace files: refuse mid-turn for the same reason
             # /compact does — the running turn is operating on those files.
@@ -1237,7 +1298,7 @@ class TUI:
             self._emit("info", "shift-tab: cycle mode (normal/auto-accept edits/yolo/plan) "
                                "· esc/ctrl-c: "
                                "interrupt · /init /skills /mcp /mcp trust /mcp login <server> "
-                               "/resume /reset /clear /compact /ctx /undo /restore /model /mode /speech /accept /exit "
+                               "/resume /reset /clear /compact /ctx /markdown /undo /restore /model /mode /speech /accept /exit "
                                "· /<skill> runs an installed skill (/skills lists them) "
                                "· !cmd shell · @path "
                                "attach · type while busy to steer the running turn "
@@ -1317,6 +1378,7 @@ class TUI:
             self._prefilled = 0
             self._prefill_total = 0
             self._think_capped = 0
+            self._md_buf.clear()       # no prose from a previous turn can leak in
             is_shell = msg.startswith("!")
             self._phase = "Running" if is_shell else "Thinking"
             self._interrupt.clear()
@@ -1359,6 +1421,7 @@ class TUI:
                 self._emit("error", f"[turn error: {type(e).__name__}: {e}]")
             finally:
                 self._requeue_leftover_steers()
+                self._flush_markdown()   # render the turn's final buffered message
                 # Commit the turn's trailing (newline-less) line to scrollback and
                 # leave a blank line between turns. Without this, the final prose
                 # line stays buffered in StdoutProxy until the next newline.
