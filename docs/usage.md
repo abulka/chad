@@ -103,7 +103,10 @@ generating, so a multi-step turn still interleaves each reply with the tool call
 follow it. Toggle it at runtime with `/markdown`, or start with it off via
 `CHAD_NO_MARKDOWN=1`.
 
-One tolerant touch, display-only: a table whose delimiter row has a different column count
+Tolerant touches, display-only. A table whose delimiter row has a different column count
 than its header (a common small-model slip) is padded/trimmed to the header so the table
-still draws. The stored message keeps the model's original text, which strict renderers
-(GitHub, VS Code) may still reject.
+still draws. A code fence a model nested inside another same-character fence (```` ```markdown ````
+holding ` ```python `) is widened — the standard way to represent nesting — so the block ends
+where the model meant and the rest of the message renders instead of being swallowed. Either
+way the stored message keeps the model's original text, which strict renderers (GitHub,
+VS Code) may still reject.

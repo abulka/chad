@@ -13,6 +13,9 @@ Notable, user-visible changes.
 - Display-only: the stored conversation and `--repl` / headless output all keep the
   model's original Markdown source.
 - Toggle at runtime with `/markdown`, or start with it off via `CHAD_NO_MARKDOWN=1`.
+- Tolerant, display-only: a mismatched table delimiter is padded to its header, and a code
+  fence a model nested inside another same-character fence is widened, so the block ends
+  where the model meant instead of swallowing the rest of the message.
 
 ## [2.3.0] — 2026-09-25
 
