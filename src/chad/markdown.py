@@ -99,7 +99,7 @@ def _render_or_raw(text: str, render: Callable[[str], str]) -> str:
         return text
 
 
-_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+_FENCE_LINE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _DELIM_CELL_RE = re.compile(r"^:?-+:?$")
 
 
@@ -147,16 +147,20 @@ def _normalize_tables(text: str) -> str:
     (VS Code, GitHub) will still refuse."""
     lines = text.split("\n")
     out: list[str] = []
-    fence = None
+    fence = None  # (fence char, run length) while inside a fenced block
     i = 0
     while i < len(lines):
         line = lines[i]
-        m = _FENCE_RE.match(line)
+        m = _FENCE_LINE_RE.match(line)
         if m:
-            marker = m.group(1)[0]
+            run, rest = m.group(1), m.group(2)
             if fence is None:
-                fence = marker
-            elif fence == marker:
+                fence = (run[0], len(run))
+            elif run[0] == fence[0] and len(run) >= fence[1] and not rest.strip():
+                # A closer needs the same character, at least the opener's length, and
+                # nothing but whitespace after. Anything else (a nested ` ```python `, a
+                # shorter run) is block content, so a table-like line inside it is left
+                # alone.
                 fence = None
             out.append(line)
             i += 1

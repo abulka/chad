@@ -93,3 +93,13 @@ def test_normalize_tables_ignores_code_fences_and_setext():
     # `text` followed by `---` is a setext heading, not a one-cell table.
     setext = "Some | text\n---\n"
     assert markdown._normalize_tables(setext) == setext
+
+
+def test_normalize_tables_skips_nested_fence_markers():
+    # A nested ` ```python ` inside a fenced block is content, not a closer: the table
+    # line after it must not be rewritten.
+    nested = "```\n```python\n| A | B | C |\n|---|---|\n```\n"
+    assert markdown._normalize_tables(nested) == nested
+    # ...and a real mismatched table after the fence still gets normalized.
+    after = "```\ncode\n```\n\n| A | B | C |\n|---|---|\n"
+    assert markdown._normalize_tables(after).endswith("| A | B | C |\n|---|---|---|\n")
