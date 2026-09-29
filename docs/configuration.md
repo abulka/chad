@@ -245,6 +245,8 @@ are the two that start a real turn.
 | `/mcp login` | authenticate an MCP server (OAuth) |
 | `/compact` | reclaim context now |
 | `/ctx` | where the context window is going, in tokens |
+| `/copy` | copy the last response to the clipboard (prose only; reasoning dropped) |
+| `/export` | write this session to Markdown (`/export [file]`; default `chad-<session_id>.md` in the working directory) |
 | `/undo` | revert files to the last edit checkpoint |
 | `/restore` | list edit checkpoints; `/restore <hash>` reverts to one |
 | `/resume` | list recent sessions; `/resume <n>` forks one |

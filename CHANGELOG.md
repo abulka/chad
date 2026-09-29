@@ -4,6 +4,15 @@ Notable, user-visible changes.
 
 ## [Unreleased]
 
+### `/copy` and `/export`
+
+- **`/copy`** puts the last response on the clipboard via macOS `pbcopy`. Reasoning and
+  tool-call scaffolding are dropped, so what lands is the answer.
+- **`/export [file]`** writes the whole session to `chad-<session_id>.md` in the working
+  directory, or to the name you give (`/export junk.md`) — reasoning dropped, tool calls
+  and results kept. The file is 0600 with known-prefix secrets masked. Both commands work
+  in the TUI and `--repl`.
+
 ## [2.3.0] — 2026-09-25
 
 ### The ternary default was a mistake; the default is now Unsloth's UD-Q3_K_XL GGUF

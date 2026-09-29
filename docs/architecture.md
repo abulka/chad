@@ -26,6 +26,7 @@ it through a re-export).
 | `base_engine.py` | The engine seam: `GenStats` plus the `BaseEngine` Protocol that `Agent` already drives, so a second backend plugs in without touching the agent loop. | `test_completion_engine.py`, `test_agent_e2e.py`, `test_cli.py` |
 | `bench.py` | The throughput benchmark behind `docs/benchmarks.md` (`chad-bench`): cold prefill, decode and warm-step tok/s on the real engine and public model. | `test_bench.py` |
 | `checkpoint.py` | Shadow-git snapshots of the workspace before each file-mutating tool, in their own GIT_DIR, so `/undo` and `/restore` can revert an auto-approved edit. | `test_checkpoint.py` |
+| `clipboard.py` | The `/copy` clipboard writer: macOS `pbcopy` behind an injected `write` seam so the success/failure contract is testable without a pasteboard. | `test_clipboard.py` |
 | `cli.py` | Argument parsing and entrypoint (`chad.cli:main`), plus the `prove` and `levers` subcommands. | `test_cli.py`, `test_cli_modes.py` |
 | `compaction.py` | Context compaction for long sessions: every pass marks what it trimmed in-band and the notice names the spill file holding the original. | `test_compaction.py`, `test_skills.py` |
 | `completion_engine.py` | The one remote backend (`--backend llama`): llama.cpp's native `/completion` endpoint driven with token-id prompts and real cache telemetry. | `test_completion_engine.py` |
@@ -45,10 +46,10 @@ it through a re-export).
 | `mlx_qsdpa.py` | JIT-compiled fused attention over the 8-bit group-64 quantized KV cache, serving decode, speculative verification and prefill. | `test_mlx_qsdpa.py`, `test_engine_kvquant.py` |
 | `prompt.py` | System-prompt construction (static prompt, workspace snapshot, project instructions) and the answer-on-paper / verify-nudge intent classifier. | `test_intent.py`, `test_warm_prefix_tiers.py`, `test_ambient.py`, `test_skills.py` |
 | `prove.py` | `chad prove` — a two-minute smoke test pinned to the shipped model, offline-guarded after the cache check, reporting your own machine's numbers. | `test_prove.py` |
-| `render.py` | Terminal rendering: raw tokens and tool results into a compact activity view, behind the `_emit(kind, text)` callback the REPL and the TUI each supply. | `test_render.py`, `test_confirm_preview.py`, `test_feel_pack.py` |
+| `render.py` | Terminal rendering: raw tokens and tool results into a compact activity view, behind the `_emit(kind, text)` callback the REPL and the TUI each supply; also `assistant_prose` for `/copy` and the Markdown export. | `test_render.py`, `test_confirm_preview.py`, `test_feel_pack.py` |
 | `repomap.py` | Tree-sitter tag extraction for the ambient levers: language detection, mtime-cached per-file definitions, and cross-file definition lookup. | `test_repomap.py`, `test_repomap_polyglot.py`, `test_ambient.py` |
 | `seatbelt.py` | macOS Seatbelt confinement for yolo-mode bash: the spawned shell (never the chad process, which needs Metal) is denied writes outside the workspace. | `test_seatbelt.py` |
-| `session.py` | Conversation persistence per project directory, so `--continue`, `--resume` and the TUI `/resume` picker survive across runs. | `test_session.py`, `test_cli_modes.py`, `conftest.py` |
+| `session.py` | Conversation persistence per project directory, so `--continue`, `--resume` and the TUI `/resume` picker survive across runs; also Markdown export (`/export`) and last-response prose (`/copy`). | `test_session.py`, `test_cli_modes.py`, `conftest.py` |
 | `skills.py` | Agent Skills: discover `SKILL.md` dirs, parse frontmatter leniently, offer each as a slash command, and load only the one the user asks for as a user turn. | `test_skills.py`, `test_validate.py`, `test_ignore.py` |
 | `speech.py` | All-local speech I/O for the TUI — Parakeet-on-MLX dictation and macOS `say` replies — with the heavy audio/MLX imports deferred to first use. | `test_speech.py`, `test_speech_tui.py` |
 | `spill.py` | Spill files: every truncation writes the dropped body to disk first and the notice names the path, so a clip is a loan rather than a deletion. | `test_spill.py`, `test_compaction.py`, `test_intent.py` |

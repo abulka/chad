@@ -246,11 +246,12 @@ class _FakeAgent:
         self.saved += 1
 
 
-def _worker_tui():
+def _worker_tui(copy_fn=None):
     """A fully-constructed TUI (fake engine, no real terminal) with its agent replaced by
     a controllable stub. Returns (tui, fake_agent). `app.invalidate` is stubbed to a
-    no-op so `_confirm` doesn't need a running prompt_toolkit event loop."""
-    tui = TUI(_fake_engine(), ctx_limit=24000)
+    no-op so `_confirm` doesn't need a running prompt_toolkit event loop. `copy_fn` is
+    the injected `/copy` clipboard writer (None -> the real pbcopy path at call time)."""
+    tui = TUI(_fake_engine(), ctx_limit=24000, copy_fn=copy_fn)
     fake = _FakeAgent(tui.agent._should_stop)  # capture the real wiring before swapping
     tui.agent = fake
     tui.app.invalidate = lambda: None
@@ -612,3 +613,77 @@ def test_fresh_agent_clears_the_pinned_todo_panel():
     tui._todos = [{"content": "from the previous session", "status": "in_progress"}]
     assert tui._fresh_agent("normal") is True
     assert tui._todos == []
+
+
+# ---------------------------------------------------------------------------
+# /copy and /export. /copy reads the last assistant prose and hands it to the
+# clipboard writer; /export writes the session markdown into the cwd. The clipboard
+# writer is patched so the tests never touch the real pasteboard.
+# ---------------------------------------------------------------------------
+
+def test_copy_command_hands_last_prose_to_clipboard():
+    seen = []
+    tui, _ = _worker_tui(copy_fn=lambda t: (seen.append(t), (True, ""))[1])
+    tui._model_ready.set()
+    tui.agent.messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "reasoning</think>\n\nthe answer"},
+    ]
+    tui._on_accept(_Buff("/copy"))
+    assert seen == ["the answer"]  # reasoning stripped, tool scaffolding ignored
+    assert "copied the last response" in "".join(tui._pending)
+
+
+def test_copy_command_reports_nothing_to_copy():
+    calls = []
+    tui, _ = _worker_tui(copy_fn=lambda t: (calls.append(t), (True, ""))[1])
+    tui._model_ready.set()
+    tui.agent.messages = [{"role": "user", "content": "hi"}]
+    tui._on_accept(_Buff("/copy"))
+    assert "nothing to copy" in "".join(tui._pending)
+    assert calls == []  # no writer call when there is no prose
+
+
+def test_copy_is_not_swallowed_as_steering_midturn():
+    tui, _ = _worker_tui()
+    tui._model_ready.set()
+    tui.agent.messages = [{"role": "assistant", "content": "answer"}]
+    tui._busy = True
+    tui._on_accept(_Buff("/copy"))
+    assert list(tui._steer_queue) == [] and list(tui._queue) == []
+
+
+def test_export_command_writes_markdown(monkeypatch, tmp_path):
+    tui, _ = _worker_tui()
+    tui._model_ready.set()
+    tui.agent.messages = [{"role": "user", "content": "do it"},
+                          {"role": "assistant", "content": "done"}]
+    tui.agent.session_id = "20260101-000000-abcd"
+    monkeypatch.chdir(tmp_path)
+    tui._on_accept(_Buff("/export"))
+    out = "".join(tui._pending)
+    assert "exported session" in out, out
+    path = tmp_path / "chad-20260101-000000-abcd.md"
+    assert path.is_file()
+    assert "done" in path.read_text()
+
+
+def test_export_command_accepts_a_filename(monkeypatch, tmp_path):
+    tui, _ = _worker_tui()
+    tui._model_ready.set()
+    tui.agent.messages = [{"role": "assistant", "content": "done"}]
+    tui.agent.session_id = "20260101-000000-abcd"
+    monkeypatch.chdir(tmp_path)
+    tui._on_accept(_Buff("/export junk.md"))
+    assert (tmp_path / "junk.md").is_file()
+    assert "exported session" in "".join(tui._pending)
+
+
+def test_export_refused_midturn(monkeypatch, tmp_path):
+    tui, _ = _worker_tui()
+    tui._model_ready.set()
+    tui._busy = True
+    monkeypatch.chdir(tmp_path)
+    tui._on_accept(_Buff("/export"))
+    assert "busy" in "".join(tui._pending)
+    assert not list(tmp_path.glob("chad-*.md"))

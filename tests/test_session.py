@@ -233,13 +233,92 @@ def test_persisted_copy_masks_known_prefix_secrets(tmp_path):
           session.load_session(a)["messages"] == masked)
 
 
+def test_last_assistant_prose_skips_tool_only_and_reasoning_only_turns():
+    # The final stored step of a capped turn can be a bare tool call; /copy should fall
+    # back to the last step that actually said something, and dig the answer out from
+    # under the reasoning.
+    messages = [
+        {"role": "user", "content": "fix it"},
+        {"role": "assistant", "content": "thinking…</think>\n\nfirst answer"},
+        {"role": "assistant", "content": "<tool_call>{\"name\": \"bash\"}</tool_call>"},
+        {"role": "assistant", "content": "<think>more thinking</think>"},
+    ]
+    check("last prose skips tool-only/think-only",
+          session.last_assistant_prose(messages) == "first answer")
+    check("no assistant prose -> ''",
+          session.last_assistant_prose([{"role": "user", "content": "hi"}]) == "")
+
+
+def test_to_markdown_drops_reasoning_keeps_tools(tmp_path):
+    messages = [
+        {"role": "system", "content": "SYSTEM SCAFFOLDING"},
+        {"role": "user", "content": "read the file"},
+        {"role": "assistant",
+         "content": "let me look</think>\n\nI'll read it.\n"
+                    "<tool_call>{\"name\": \"read\", \"arguments\": {\"path\": \"x\"}}"
+                    "</tool_call>"},
+        {"role": "tool", "name": "read", "content": "line one\nline two"},
+    ]
+    md = session.to_markdown(messages, title="t")
+    check("title rendered", md.startswith("# t\n"))
+    check("system scaffolding dropped", "SYSTEM SCAFFOLDING" not in md)
+    check("user section", "## User" in md and "read the file" in md)
+    check("reasoning dropped", "let me look" not in md and "<think>" not in md)
+    check("prose kept", "I'll read it." in md)
+    check("tool call kept", "### Tool call" in md and "\"name\": \"read\"" in md)
+    check("tool result kept", "### Tool: read" in md and "line two" in md)
+
+
+def test_export_markdown_masks_secrets_and_writes_0600(tmp_path):
+    # The in-memory transcript holds the real token; the on-disk export must not, and it
+    # must not be world-readable in a repo.
+    cwd = _proj(tmp_path, "proj_export")
+    tok = "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+    messages = [
+        {"role": "user", "content": "run it"},
+        {"role": "assistant",
+         "content": "<tool_call>{\"name\": \"bash\", \"arguments\": "
+                    "{\"command\": \"curl -H 'Authorization: Bearer " + tok + "' x\"}}"
+                    "</tool_call>"},
+        {"role": "tool", "name": "bash", "content": "output Bearer " + tok},
+    ]
+    ok, path = session.export_markdown(messages, cwd, "20260101-000000-abcd",
+                                       {"mode": "auto", "thinking": True})
+    check("export succeeds", ok and os.path.isfile(path), path)
+    check("export name", os.path.basename(path) == "chad-20260101-000000-abcd.md")
+    check("export is 0600", oct(os.stat(path).st_mode & 0o777) == "0o600",
+          oct(os.stat(path).st_mode & 0o777))
+    body = open(path).read()
+    check("secret masked on disk", tok not in body and "<redacted:40>" in body)
+    check("no secrets in the in-memory source", tok in messages[2]["content"])
+    check("meta subtitle", "mode: auto" in body and "thinking: on" in body)
+    # an explicit filename lands in cwd (the `/export junk.md` form)
+    ok3, path3 = session.export_markdown(messages, cwd, "20260101-000000-abcd",
+                                         {"mode": "auto"}, filename="junk.md")
+    check("custom filename in cwd", ok3 and path3 == os.path.join(cwd, "junk.md")
+          and os.path.isfile(path3), path3)
+    # an absolute filename is honored as-is
+    abs_target = os.path.join(tmp_path, "elsewhere.md")
+    ok4, path4 = session.export_markdown(messages, cwd, "20260101-000000-abcd",
+                                         filename=abs_target)
+    check("absolute filename honored", ok4 and path4 == abs_target
+          and os.path.isfile(abs_target), path4)
+    # unwritable target reports a reason rather than raising
+    ok2, reason2 = session.export_markdown(messages, os.path.join(cwd, "nope"),
+                                           "s", {})
+    check("unwritable target -> reason", ok2 is False and "could not write" in reason2)
+
+
 if __name__ == "__main__":
     for test in (test_session, test_session_perms_0600, test_mint_list_and_fork,
                  test_prune_keeps_newest, test_adopt_legacy,
                  test_adopt_legacy_keeps_the_source_when_the_copy_fails,
                  test_adopt_legacy_sets_an_unparseable_file_aside,
                  test_index_0600_and_corrupt_tolerated,
-                 test_persisted_copy_masks_known_prefix_secrets):
+                 test_persisted_copy_masks_known_prefix_secrets,
+                 test_last_assistant_prose_skips_tool_only_and_reasoning_only_turns,
+                 test_to_markdown_drops_reasoning_keeps_tools,
+                 test_export_markdown_masks_secrets_and_writes_0600):
         # Same isolation conftest gives each test under pytest.
         with tempfile.TemporaryDirectory() as home, pytest.MonkeyPatch.context() as mp:
             mp.setenv("CHAD_SESSION_DIR", os.path.join(home, "sessions"))

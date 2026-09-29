@@ -25,6 +25,7 @@ in tool results and tool-call arguments; the in-memory transcript keeps the real
 import hashlib
 import json
 import os
+import re
 import secrets
 import time
 
@@ -81,6 +82,28 @@ def _atomic_write_json(path: str, obj) -> bool:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             json.dump(obj, f)
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def _atomic_write_text(path: str, text: str) -> bool:
+    """Write `text` to `path` atomically at 0600, mirroring `_atomic_write_json`.
+
+    The transcript keeps real token values in memory (`_redacted` masks only the on-disk
+    session copy), so an export written into the working tree is both masked on the way in
+    and created 0600 — the export outlives the session, and it must not be the copy that
+    leaks a credential or lands world-readable in a repo."""
+    tmp = path + f".{os.getpid()}.tmp"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
         os.replace(tmp, path)
         return True
     except OSError:
@@ -320,3 +343,87 @@ def session_summary(cwd: str) -> str:
     users = _turns(data["messages"])
     when = _ago(max(0, int(time.time() - data.get("updated", 0))))
     return f"{users} prior user turn{'s' * (users != 1)}, last active {when}"
+
+
+# -- Markdown export (`/export`) ---------------------------------------------
+
+# Raw tool-call scaffolding kept in an export: the answer is prose, but the calls are
+# what happened, so an export that dropped them would not be a record of the session.
+_TOOL_CALL_RE = re.compile(r"<tool_call>.*?</tool_call>|<function=.*?</function>",
+                           re.DOTALL)
+
+
+def _code_block(text: str) -> str:
+    """Fence `text` so embedded backtick runs cannot close the block early."""
+    body = str(text).rstrip("\n")
+    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}\n{body}\n{fence}"
+
+
+def last_assistant_prose(messages: list) -> str:
+    """The newest assistant turn's prose, reasoning and tool-call syntax removed.
+
+    A turn's final stored step is normally the answer, but a capped/interrupted turn can
+    end on a tool call with no prose, so this walks back to the last step that actually
+    said something. "" when none did (a session that has only read files so far)."""
+    from .render import assistant_prose  # local: render pulls in tools, keep import cost off
+    for m in reversed(messages):
+        if m.get("role") != "assistant":
+            continue
+        text = assistant_prose(m.get("content") or "")
+        if text:
+            return text
+    return ""
+
+
+def to_markdown(messages: list, *, title: str = "chad session",
+                subtitle: str = "") -> str:
+    """Render a stored transcript as Markdown. Reasoning is dropped (it is not the
+    answer) while tool calls and their results are kept, fenced, so the export is a full
+    record rather than just the chat."""
+    from .render import assistant_prose
+    out = [f"# {title}"]
+    if subtitle:
+        out += ["", f"_{subtitle}_"]
+    out += [""]
+    for m in messages:
+        role = m.get("role")
+        content = str(m.get("content") or "")
+        if role == "system":
+            continue
+        if role == "user":
+            out += ["## User", "", content.strip(), ""]
+        elif role == "assistant":
+            prose = assistant_prose(content)
+            if prose:
+                out += ["## Assistant", "", prose, ""]
+            for call in _TOOL_CALL_RE.findall(content):
+                out += ["### Tool call", "", _code_block(call.strip()), ""]
+        elif role == "tool":
+            out += [f"### Tool: {m.get('name', 'tool')}", "", _code_block(content), ""]
+    return "\n".join(out).rstrip("\n") + "\n"
+
+
+def export_markdown(messages: list, cwd: str, session_id: str,
+                    meta: dict = None, filename: str = "") -> tuple[bool, str]:
+    """Write the current conversation to Markdown, `chad-<session_id>.md` in `cwd` by
+    default or `filename` when given (`/export junk.md`).
+
+    A relative `filename` lands in `cwd`; an absolute one goes where it points. The
+    transcript is masked with the same known-prefix rule as the session store before
+    rendering, and the file is written 0600 (`_atomic_write_text`). Returns `(ok, path)`
+    or `(False, reason)` so the caller can report where it landed."""
+    meta = meta or {}
+    bits = []
+    if meta.get("mode"):
+        bits.append(f"mode: {meta['mode']}")
+    if meta.get("thinking") is not None:
+        bits.append(f"thinking: {'on' if meta['thinking'] else 'off'}")
+    body = to_markdown(_redacted(messages), title=f"chad session {session_id}",
+                       subtitle=" · ".join(bits))
+    name = filename.strip() or f"chad-{session_id}.md"
+    path = name if os.path.isabs(name) else os.path.join(cwd, name)
+    if not _atomic_write_text(path, body):
+        return False, f"could not write {path}"
+    return True, path

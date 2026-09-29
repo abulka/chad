@@ -1882,10 +1882,28 @@ def repl(engine: BaseEngine, yolo: bool, ctx_limit: int = 24000, resume: list = 
             for ln in mcp.summary_lines():
                 print(f"{C_DIM}  {ln}{C_RST}")
             continue
+        if line == "/copy":
+            from . import clipboard
+            text = session.last_assistant_prose(agent.messages)
+            if not text:
+                print(f"{C_DIM}nothing to copy yet — ask something first.{C_RST}")
+            else:
+                ok, reason = clipboard.copy(text)
+                print(f"{C_DIM}copied the last response ({len(text):,} chars).{C_RST}"
+                      if ok else f"{C_YEL}[copy failed: {reason}]{C_RST}")
+            continue
+        if line == "/export" or line.startswith("/export "):
+            ok, result = session.export_markdown(
+                agent.messages, os.getcwd(), agent.session_id,
+                {"mode": agent.mode, "thinking": thinking},
+                filename=line[len("/export"):].strip())
+            print(f"{C_DIM}exported session → {os.path.relpath(result)}{C_RST}"
+                  if ok else f"{C_YEL}[export failed: {result}]{C_RST}")
+            continue
         if line == "/help":
             print(f"{C_DIM}/init /skills /mcp /mcp trust /mcp login <server> /reset /clear "
-                  f"/compact /model /mode /exit · /<skill> runs an installed skill "
-                  f"(/skills lists them) · !cmd runs a shell command · "
+                  f"/compact /copy /export [file] /model /mode /exit · /<skill> runs an "
+                  f"installed skill (/skills lists them) · !cmd runs a shell command · "
                   f"@path attaches a file/dir{C_RST}")
             continue
         if line == "/init":

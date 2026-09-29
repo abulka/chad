@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 from collections import deque
-from typing import TYPE_CHECKING, Optional, Protocol
+from typing import TYPE_CHECKING, Callable, Optional, Protocol
 
 log = logging.getLogger("chad.tui")
 
@@ -214,6 +214,8 @@ SLASH_COMMANDS = [
     ("/mcp login", "authenticate an MCP server (OAuth)"),
     ("/compact", "reclaim context now"),
     ("/ctx", "where the context window is going, in tokens"),
+    ("/copy", "copy the last response to the clipboard"),
+    ("/export", "write this session to Markdown (/export [file.md])"),
     ("/undo", "revert files to the last edit checkpoint"),
     ("/restore", "list edit checkpoints; /restore <hash> reverts to one"),
     ("/resume", "list recent sessions; /resume <n> forks one"),
@@ -379,12 +381,18 @@ class _SpeechModule(Protocol):
     def transcribe(self, audio: "NDArray[np.float32]") -> str: ...
 
 
+# The `/copy` clipboard writer as a seam: `clipboard.copy`'s signature, so a test can pass
+# an in-memory double from the constructor instead of reaching into the module at runtime.
+_CopyFn = Callable[[str], tuple[bool, str]]
+
+
 class TUI:
     def __init__(self, engine: BaseEngine, ctx_limit: int, mode: str = "normal",
                  thinking: bool = True, max_chars: int = 400_000, resume: list = None,
                  ctx_window: int = None, finalize=None, ctx_limit_fn=None,
                  native_ctx: int = None, speech: Optional[_SpeechModule] = None,
-                 recorder: Optional[_Recorder] = None, speaker: Optional[_Speaker] = None):
+                 recorder: Optional[_Recorder] = None, speaker: Optional[_Speaker] = None,
+                 copy_fn: Optional[_CopyFn] = None):
         self.engine = engine
         self.ctx_limit = ctx_limit
         self._ctx_limit_fn = ctx_limit_fn  # live per-turn recheck
@@ -461,6 +469,9 @@ class TUI:
         # "" | "recording" | "transcribing".
         # The speech module, TTS player and mic stay None until the first /speech
         # unless the caller passed its own.
+        # `/copy`'s clipboard writer: injected in tests, resolved to chad.clipboard on the
+        # first copy otherwise.
+        self._copy_fn = copy_fn
         self.speech_on = False
         self._speech = speech
         self._speaker = speaker
@@ -953,6 +964,37 @@ class TUI:
         self._resume_list = []
         self._emit("info", f"resumed (forked): {session.describe(pick)}")
 
+    def _copy_last_response(self):
+        """`/copy` — put the last assistant reply on the clipboard (prose only; reasoning
+        and tool-call scaffolding are dropped, matching what the transcript showed)."""
+        from . import clipboard
+        from .session import last_assistant_prose
+        text = last_assistant_prose(self.agent.messages)
+        if not text:
+            self._emit("info", "nothing to copy yet — ask something first.")
+            return
+        ok, reason = (self._copy_fn or clipboard.copy)(text)
+        if ok:
+            self._emit("info", f"copied the last response ({len(text):,} chars).")
+        else:
+            self._emit("error", f"[copy failed: {reason}]")
+
+    def _export_session(self, filename: str = ""):
+        """`/export [file]` — write the current conversation to `chad-<session_id>.md`
+        (or `filename`) in the working directory. Refused mid-turn: the worker is still
+        appending steps, and an export of half a turn is not the session."""
+        if self._busy:
+            self._emit("info", "busy — /export once the current turn finishes.")
+            return
+        from . import session
+        ok, result = session.export_markdown(
+            self.agent.messages, os.getcwd(), self.agent.session_id,
+            {"mode": self.agent.mode, "thinking": self.thinking}, filename=filename)
+        if ok:
+            self._emit("info", f"exported session → {os.path.relpath(result)}")
+        else:
+            self._emit("error", f"[export failed: {result}]")
+
     # -- voice mode (/speech) ---------------------------------------------
 
     def _speech_module(self) -> _SpeechModule:
@@ -1173,6 +1215,13 @@ class TUI:
                 self._emit("info", f"  [context breakdown unavailable: "
                                    f"{type(e).__name__}: {e}]")
             return False
+        if text == "/copy":
+            # Read-only over the stored transcript, so like /ctx it needs no busy guard.
+            self._copy_last_response()
+            return False
+        if text == "/export" or text.startswith("/export "):
+            self._export_session(text[len("/export"):].strip())
+            return False
         if text == "/undo" or text == "/restore" or text.startswith("/restore "):
             # Checkout mutates workspace files: refuse mid-turn for the same reason
             # /compact does — the running turn is operating on those files.
@@ -1237,7 +1286,7 @@ class TUI:
             self._emit("info", "shift-tab: cycle mode (normal/auto-accept edits/yolo/plan) "
                                "· esc/ctrl-c: "
                                "interrupt · /init /skills /mcp /mcp trust /mcp login <server> "
-                               "/resume /reset /clear /compact /ctx /undo /restore /model /mode /speech /accept /exit "
+                               "/resume /reset /clear /compact /ctx /copy /export [file] /undo /restore /model /mode /speech /accept /exit "
                                "· /<skill> runs an installed skill (/skills lists them) "
                                "· !cmd shell · @path "
                                "attach · type while busy to steer the running turn "

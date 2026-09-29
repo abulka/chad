@@ -58,6 +58,11 @@ weights**, runs in seconds, and is what CI runs. For throughput on your own mach
   is never silent.
 - `@file` / `@dir` mentions and `!command` shell passthrough. Pull a file into
   context inline, or run a shell command without invoking the model.
+- `/copy` puts the last response on the clipboard (via macOS `pbcopy`; reasoning and
+  tool-call syntax are dropped). `/export` writes the whole session to
+  `chad-<session_id>.md` in the working directory — or to the name you give,
+  `/export junk.md` — mode 0600 with known-prefix secrets masked. Both also work in
+  `--repl`.
 - Standing project instructions. A `CLAUDE.md` (or `AGENTS.md`) in the working directory is
   appended to the system prompt, and `/init` reads the project and writes one for you
   ([details](configuration.md#project-instructions-claudemd--agentsmd)).

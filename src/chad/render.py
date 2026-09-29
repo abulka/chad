@@ -163,6 +163,18 @@ def _split_view(raw: str, final: bool, started_in_think: bool = False):
     return prose, think
 
 
+def assistant_prose(raw: str) -> str:
+    """The prose of a stored assistant turn: reasoning and tool-call syntax removed, the
+    same cleaning the stream view applies. `/copy` and the Markdown export want the
+    answer, not the raw wire text with its `<think>` and `<tool_call>` scaffolding.
+
+    With thinking enabled the chat template opens the block, so the stored turn can begin
+    with reasoning and a bare `</think>`; `started_in_think` recovers that case."""
+    started_in_think = "</think>" in raw and "<think>" not in raw
+    prose, _think = _split_view(raw, final=True, started_in_think=started_in_think)
+    return prose.strip()
+
+
 class _StreamView:
     """Feeds raw tokens in, emits 'stream' (prose) and 'think' (reasoning) deltas."""
 
