@@ -289,29 +289,32 @@ def _inside_fence(doc, heading):
     return False
 
 
-def test_to_markdown_closes_a_fence_the_model_left_open():
-    # A model that nests same-character fences leaves the outer block open; without a
-    # repair every later section collapses into that code block (the export "out of
-    # whack" bug). The export closes it so the structure survives; balanced text is
-    # returned byte-for-byte.
-    prose = ("Sample:\n\n```markdown\n# H1\n\n```python\nprint(1)\n```\n\n"
-             "[link](https://x)\n```\n\nWant more?\n")
+def test_to_markdown_repairs_nested_and_unclosed_fences():
+    # Nested same-character fences (` ```markdown ` holding ` ```python `) are widened so
+    # the code block ends where the model meant it to, keeping later sections out of it;
+    # a dangling opener is closed outright. Both bugs otherwise swallow what follows.
+    nested = ("Sample:\n\n```markdown\n# H1\n\n```python\nprint(1)\n```\n\n"
+              "[link](https://x)\n```\n\nWant more?\n")
     messages = [
         {"role": "user", "content": "show markdown"},
-        {"role": "assistant", "content": prose + "<tool_call><function=done>"
+        {"role": "assistant", "content": nested + "<tool_call><function=done>"
                                                    "<parameter=summary>ok</parameter>"
                                                    "</function></tool_call>"},
         {"role": "tool", "name": "done", "content": "done."},
     ]
     md = session.to_markdown(messages, title="t")
-    check("tool call stays outside the prose fence",
+    check("nested: tool call outside the prose fence",
           not _inside_fence(md, "### Tool call"), md)
-    check("tool result stays outside the prose fence",
+    check("nested: tool result outside the prose fence",
           not _inside_fence(md, "### Tool: done"), md)
+    check("nested: outer fence widened", "````markdown" in md, md)
+    md2 = session.to_markdown([{"role": "assistant", "content": "see:\n\n```\nunclosed\n"}],
+                              title="t")
+    check("dangling: opener closed", md2.rstrip("\n").endswith("```"), md2)
     check("balanced input left verbatim",
-          session._balance_fence("```\nx\n```\n") == "```\nx\n```\n")
+          session._normalize_fences("```\nx\n```\n") == "```\nx\n```\n")
     check("plain text left verbatim",
-          session._balance_fence("# H\n\nbody\n") == "# H\n\nbody\n")
+          session._normalize_fences("# H\n\nbody\n") == "# H\n\nbody\n")
 
 
 def test_export_markdown_masks_secrets_and_writes_0600(tmp_path):
@@ -363,7 +366,7 @@ if __name__ == "__main__":
                  test_persisted_copy_masks_known_prefix_secrets,
                  test_last_assistant_prose_skips_tool_only_and_reasoning_only_turns,
                  test_to_markdown_drops_reasoning_keeps_tools,
-                 test_to_markdown_closes_a_fence_the_model_left_open,
+                 test_to_markdown_repairs_nested_and_unclosed_fences,
                  test_export_markdown_masks_secrets_and_writes_0600):
         # Same isolation conftest gives each test under pytest.
         with tempfile.TemporaryDirectory() as home, pytest.MonkeyPatch.context() as mp:

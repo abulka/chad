@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import time
+from dataclasses import dataclass
 
 from . import config
 from .diag import redact
@@ -364,28 +365,65 @@ def _code_block(text: str) -> str:
 _FENCE_LINE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
-def _balance_fence(text: str) -> str:
-    """Append a closing fence if `text` leaves one open, else return it unchanged.
+@dataclass
+class _Fence:
+    line: int              # index into the split lines
+    char: str              # fence character (backtick or tilde)
+    length: int            # run length as written
+    indent: str            # leading spaces, preserved when the run is rewritten
+    info: str              # trailing info string (empty for a closer)
+    widest_child: int = 0  # widest same-char fence nested inside this opener
 
-    CommonMark: a fence opens on a line of 3+ backticks/tildes (at most 3 spaces indent)
-    with an optional info string, and closes only on a line of the same character, at
-    least as long, with nothing but whitespace after. Small models nest same-character
-    fences (` ```markdown ` holding ` ```python `), which leaves the outer block open and
-    swallows every section that follows it in the export; this closes the block so the
-    rest of the document survives."""
-    opening = None  # (fence char, run length) while a fence is open
-    for line in text.split("\n"):
+
+def _normalize_fences(text: str) -> str:
+    """Repair a model's code fences so the export stays one document.
+
+    CommonMark cannot nest a ``` block inside another ```, and small models write exactly
+    that (` ```markdown ` holding ` ```python `): the inner opener is content, so the
+    first bare ``` closes the outer block early and every later section drifts into it.
+    This pairs fences with a stack — an info-bearing fence opens, a bare same-char fence
+    at least as long closes — widens each opener holding same-char children to one more
+    than its widest child (the standard nesting representation), and closes an opener the
+    model left dangling. Content is unchanged; only fence runs are rewritten.
+
+    Mirrors `chad.markdown._normalize_fences` (that module is not present before the
+    renderer lands, so the export keeps its own copy rather than import it)."""
+    lines = text.split("\n")
+    out = list(lines)
+    stack: list[_Fence] = []
+
+    def widen(top: _Fence, closer_idx: int | None, closer_indent: str) -> None:
+        eff = max(top.length, top.widest_child + 1) if top.widest_child else top.length
+        out[top.line] = top.indent + top.char * eff + top.info
+        if closer_idx is None:
+            out.append(top.char * eff)  # synthesize the closer for an unclosed opener
+        else:
+            out[closer_idx] = closer_indent + top.char * eff
+        if stack:  # report this block's width to its parent before it is popped
+            stack[-1].widest_child = max(stack[-1].widest_child, eff)
+
+    for i, line in enumerate(lines):
         m = _FENCE_LINE_RE.match(line)
         if not m:
             continue
         run, rest = m.group(1), m.group(2)
-        if opening is None:
-            opening = (run[0], len(run))
-        elif run[0] == opening[0] and len(run) >= opening[1] and not rest.strip():
-            opening = None
-    if opening is None:
-        return text
-    return text.rstrip("\n") + "\n" + opening[0] * opening[1]
+        char, n, info = run[0], len(run), rest.strip()
+        indent = line[:m.start(1)]
+        if stack:
+            top = stack[-1]
+            if char == top.char and info == "" and n >= top.length:
+                stack.pop()
+                widen(top, i, indent)
+            elif char == top.char and info != "":
+                stack.append(_Fence(i, char, n, indent, rest))
+            # a different char, or a shorter bare fence, is block content: ignore
+        else:
+            stack.append(_Fence(i, char, n, indent, rest))
+    while stack and out and out[-1] == "":
+        out.pop()  # don't strand a synthesized closer below a trailing blank line
+    while stack:  # unclosed openers: close innermost first
+        widen(stack.pop(), None, "")
+    return "\n".join(out)
 
 
 def last_assistant_prose(messages: list) -> str:
@@ -420,11 +458,11 @@ def to_markdown(messages: list, *, title: str = "chad session",
         if role == "system":
             continue
         if role == "user":
-            out += ["## User", "", _balance_fence(content.strip()), ""]
+            out += ["## User", "", _normalize_fences(content.strip()), ""]
         elif role == "assistant":
             prose = assistant_prose(content)
             if prose:
-                out += ["## Assistant", "", _balance_fence(prose), ""]
+                out += ["## Assistant", "", _normalize_fences(prose), ""]
             for call in _TOOL_CALL_RE.findall(content):
                 out += ["### Tool call", "", _code_block(call.strip()), ""]
         elif role == "tool":
