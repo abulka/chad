@@ -103,3 +103,23 @@ def test_normalize_tables_skips_nested_fence_markers():
     # ...and a real mismatched table after the fence still gets normalized.
     after = "```\ncode\n```\n\n| A | B | C |\n|---|---|\n"
     assert markdown._normalize_tables(after).endswith("| A | B | C |\n|---|---|---|\n")
+
+
+def test_normalize_fences_widens_same_char_nesting():
+    # CommonMark can't nest ``` inside ```; the outer is widened one backtick past its
+    # widest child (the standard representation), so the inner block stays literal.
+    src = "```markdown\n# H\n```python\nprint(1)\n```\ntail\n```\n"
+    out = markdown._normalize_fences(src)
+    assert out.splitlines()[0] == "````markdown"
+    assert out.splitlines()[-1] == "````"
+    assert "```python" in out and "\n```\n" in out  # the inner fence is untouched
+    assert markdown._normalize_fences(out) == out    # idempotent
+
+
+def test_normalize_fences_closes_an_unclosed_opener():
+    assert markdown._normalize_fences("```\nx\n") == "```\nx\n```"
+
+
+def test_normalize_fences_leaves_valid_nesting():
+    src = "````markdown\n```python\nx\n```\n````\n"
+    assert markdown._normalize_fences(src) == src

@@ -15,6 +15,7 @@ import functools
 import io
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import ClassVar
 
 # rich's style names for its Markdown renderable, mapped onto chad's understated
@@ -178,6 +179,65 @@ def _normalize_tables(text: str) -> str:
     return "\n".join(out)
 
 
+@dataclass
+class _Fence:
+    line: int              # index into the split lines
+    char: str              # fence character (backtick or tilde)
+    length: int            # run length as written
+    indent: str            # leading spaces, preserved when the run is rewritten
+    info: str              # trailing info string (empty for a closer)
+    widest_child: int = 0  # widest same-char fence nested inside this opener
+
+
+def _normalize_fences(text: str) -> str:
+    """Widen an outer fence so same-character nesting parses.
+
+    CommonMark cannot nest a ``` block inside another ```: the first bare ``` closes the
+    outer one, so a model that writes ```markdown holding ```python gets a short block and
+    the rest of the message drifts out of it. The intent is unambiguous (an info-bearing
+    inner fence), and the standard representation is a longer outer fence. Pair fences
+    with a stack — a fence with an info string opens, a bare fence of the same character
+    at least as long closes, anything else is content — then widen each opener that holds
+    same-character children to one more than its widest child, and its closer to match.
+    Unclosed openers are closed too, so a dangling block can't swallow what follows."""
+    lines = text.split("\n")
+    out = list(lines)
+    stack: list[_Fence] = []
+
+    def widen(top: _Fence, closer_idx: int | None, closer_indent: str) -> None:
+        eff = max(top.length, top.widest_child + 1) if top.widest_child else top.length
+        out[top.line] = top.indent + top.char * eff + top.info
+        if closer_idx is None:
+            out.append(top.char * eff)  # synthesize the closer for an unclosed opener
+        else:
+            out[closer_idx] = closer_indent + top.char * eff
+        if stack:  # report this block's width to its parent before it is popped
+            stack[-1].widest_child = max(stack[-1].widest_child, eff)
+
+    for i, line in enumerate(lines):
+        m = _FENCE_LINE_RE.match(line)
+        if not m:
+            continue
+        run, rest = m.group(1), m.group(2)
+        char, n, info = run[0], len(run), rest.strip()
+        indent = line[:m.start(1)]
+        if stack:
+            top = stack[-1]
+            if char == top.char and info == "" and n >= top.length:
+                stack.pop()
+                widen(top, i, indent)
+            elif char == top.char and info != "":
+                stack.append(_Fence(i, char, n, indent, rest))
+            # a different char, or a shorter bare fence, is block content: ignore
+        else:
+            stack.append(_Fence(i, char, n, indent, rest))
+    while stack and out and out[-1] == "":
+        out.pop()  # don't strand a synthesized closer below a trailing blank line
+    while stack:  # unclosed openers: close innermost first
+        widen(stack.pop(), None, "")
+    return "\n".join(out)
+
+
 def _rich_render(text: str, width: int) -> str:
     """Render with rich; may raise (a missing rich, a bad message) — the caller falls
     back to the raw text."""
@@ -203,4 +263,5 @@ def render_markdown(text: str, width: int) -> str:
     newline. Returns `text` unchanged if rich is unavailable or rendering raises."""
     if not text:
         return ""
-    return _render_or_raw(_normalize_tables(text), lambda t: _rich_render(t, width))
+    return _render_or_raw(_normalize_tables(_normalize_fences(text)),
+                          lambda t: _rich_render(t, width))
