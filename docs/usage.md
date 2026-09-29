@@ -56,6 +56,9 @@ weights**, runs in seconds, and is what CI runs. For throughput on your own mach
 - ctrl-c interrupts the running turn without killing the session. **↑prefilled /
   ↓generated** token counts show an advancing **%** on an unavoidable full re-prefill, so it
   is never silent.
+- Assistant replies render as **Markdown** — headings, emphasis, lists and highlighted code
+  fences — instead of raw `**` and backticks. `/markdown` toggles it; `CHAD_NO_MARKDOWN=1`
+  starts with it off; `--repl` and headless output stay raw ([details](#rendered-markdown)).
 - `@file` / `@dir` mentions and `!command` shell passthrough. Pull a file into
   context inline, or run a shell command without invoking the model.
 - Standing project instructions. A `CLAUDE.md` (or `AGENTS.md`) in the working directory is
@@ -86,3 +89,16 @@ Two subcommands, each with its own `--help`: `chad prove` (the offline smoke tes
 A headless task (positional, or piped with no TTY) auto-approves mutating tools and runs
 greedy (temp 0). Every conversation is persisted under `~/.chad/sessions/`, and every resume
 forks a new branch rather than overwriting.
+
+## Rendered Markdown
+
+The model writes Markdown, and the TUI renders it (via [rich](https://rich.readthedocs.io))
+into the terminal's normal scrollback: headings line up flush left, emphasis and inline code
+are styled, fenced code blocks are syntax-highlighted, and lists, block quotes, tables and
+links are laid out. The stored conversation keeps the model's original Markdown source, so
+anything that reads the transcript (and `--repl` / headless output) sees it unchanged.
+
+Rendering is **per assistant message**: a message is buffered and drawn once it finishes
+generating, so a multi-step turn still interleaves each reply with the tool calls that
+follow it. Toggle it at runtime with `/markdown`, or start with it off via
+`CHAD_NO_MARKDOWN=1`.

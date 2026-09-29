@@ -245,6 +245,7 @@ are the two that start a real turn.
 | `/mcp login` | authenticate an MCP server (OAuth) |
 | `/compact` | reclaim context now |
 | `/ctx` | where the context window is going, in tokens |
+| `/markdown` | toggle rendered Markdown in the transcript (TUI) |
 | `/undo` | revert files to the last edit checkpoint |
 | `/restore` | list edit checkpoints; `/restore <hash>` reverts to one |
 | `/resume` | list recent sessions; `/resume <n>` forks one |
@@ -661,6 +662,7 @@ CHAD_NO_REPEAT_GUARD=1      uv run chad  # A/B knob: DISABLE the degenerate-repe
 CHAD_NO_SYNTAX_GATE=1       uv run chad  # A/B knob: DISABLE the post-edit syntax gate
 CHAD_NO_PREFIX_CACHE=1      uv run chad  # measurement knob: drop the persistent prefix KV cache
 CHAD_NO_SKILLS=1            uv run chad  # disable Agent Skill discovery (no /<skill>)
+CHAD_NO_MARKDOWN=1          uv run chad  # show assistant Markdown raw (no TUI rendering)
 CHAD_NO_FASTPATH=1          uv run chad  # A/B knob: disable the fused-projection decode fast path
 CHAD_NO_DESTRUCTIVE_GUARD=1 uv run chad  # DISABLE the catastrophic-bash screen (unsafe)
 CHAD_NO_SEATBELT=1          uv run chad  # DISABLE the macOS Seatbelt sandbox for yolo bash (unsafe)
@@ -716,6 +718,11 @@ CHAD_PROTECT_GIT=1          uv run chad  # also write-DENY .git inside the yolo 
   so this is no longer needed to keep your personal skills out of a benchmark; set it
   when you want them unreachable from chad at all. Like every other `CHAD_NO_*` flag it
   reads as set or unset: any non-empty value, `0` included, turns discovery off.
+- `CHAD_NO_MARKDOWN`: disables [rendered assistant Markdown](usage.md#rendered-markdown)
+  in the TUI, so the transcript shows the model's raw `**bold**`, headings and fences —
+  the same bytes the `--repl` and headless paths print. It is a display-only A/B knob
+  (and a way to keep a session's scrollback free of styling); the `/markdown` command
+  toggles the same state at runtime.
 - `CHAD_NO_FASTPATH`: disables the fused-projection + compiled decode step installed
   at load for the dense `qwen3_5` hybrid (`mlx_fastpath.py`): the MLP `gate|up` concat, the
   GDN `in_proj` concat, and the compiled S=1 layer step; on the

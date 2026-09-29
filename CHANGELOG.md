@@ -4,6 +4,16 @@ Notable, user-visible changes.
 
 ## [Unreleased]
 
+### Rendered Markdown in the TUI
+
+- Assistant replies are rendered as Markdown (headings, emphasis, inline code, highlighted
+  code fences, lists, block quotes, tables and links) directly into the terminal scrollback,
+  instead of showing the raw `**`, `#` and backticks the model emits. Rendering is
+  per assistant message, so tool activity still interleaves in order.
+- Display-only: the stored conversation and `--repl` / headless output all keep the
+  model's original Markdown source.
+- Toggle at runtime with `/markdown`, or start with it off via `CHAD_NO_MARKDOWN=1`.
+
 ## [2.3.0] — 2026-09-25
 
 ### The ternary default was a mistake; the default is now Unsloth's UD-Q3_K_XL GGUF
