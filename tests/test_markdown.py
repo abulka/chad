@@ -67,3 +67,29 @@ def test_render_falls_back_to_raw_on_failure():
         raise RuntimeError("no rich")
 
     assert markdown._render_or_raw("# Heading\n\nbody\n", boom) == "# Heading\n\nbody\n"
+
+
+def test_render_normalizes_mismatched_table_delimiter():
+    # A classic small-model slip: 3 header cells, 2 delimiter cells. GFM rejects the
+    # whole table and it prints as raw pipes; the renderer pads the delimiter to match,
+    # so the table draws. (Stored text is untouched — see _normalize_tables.)
+    out = markdown.render_markdown("| A | B | C |\n|---|---|\n| 1 | 2 | 3 |\n", 80)
+    assert "|---|" not in _plain(out)     # raw delimiter gone -> parsed as a table
+    assert "─" in out                      # rich drew the header rule
+    assert all(c in _plain(out) for c in ("A", "B", "C", "1", "2", "3"))
+
+
+def test_normalize_tables_pads_and_trims_to_header():
+    assert markdown._normalize_tables("| A | B | C |\n|---|---|\n") == (
+        "| A | B | C |\n|---|---|---|\n")
+    assert markdown._normalize_tables("| A |\n|---|---|\n") == "| A |\n|---|\n"
+    good = "| A | B |\n|---|---|\n| 1 | 2 |\n"
+    assert markdown._normalize_tables(good) == good
+
+
+def test_normalize_tables_ignores_code_fences_and_setext():
+    fenced = "```\n| A | B | C |\n|---|---|\n```\n"
+    assert markdown._normalize_tables(fenced) == fenced
+    # `text` followed by `---` is a setext heading, not a one-cell table.
+    setext = "Some | text\n---\n"
+    assert markdown._normalize_tables(setext) == setext

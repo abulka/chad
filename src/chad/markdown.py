@@ -99,6 +99,81 @@ def _render_or_raw(text: str, render: Callable[[str], str]) -> str:
         return text
 
 
+_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+_DELIM_CELL_RE = re.compile(r"^:?-+:?$")
+
+
+def _split_row(row: str) -> list[str]:
+    """Cells of a GFM table row: split on unescaped pipes, dropping the optional
+    leading/trailing pipe. A `\\|` is cell content, not a separator."""
+    s = row.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|") and not s.endswith("\\|"):
+        s = s[:-1]
+    cells, cur, i = [], [], 0
+    while i < len(s):
+        if s[i] == "\\" and i + 1 < len(s):
+            cur.append(s[i:i + 2])
+            i += 2
+        elif s[i] == "|":
+            cells.append("".join(cur))
+            cur = []
+            i += 1
+        else:
+            cur.append(s[i])
+            i += 1
+    cells.append("".join(cur))
+    return cells
+
+
+def _is_table_separator(row: str) -> bool:
+    """A GFM delimiter row: pipe-delimited cells that are all hyphens (colons for
+    alignment). Requiring a pipe avoids mistaking a setext heading (`text` / `---`) for
+    a one-cell table."""
+    if "|" not in row:
+        return False
+    cells = _split_row(row)
+    return bool(cells) and all(_DELIM_CELL_RE.match(c.strip()) for c in cells)
+
+
+def _normalize_tables(text: str) -> str:
+    """Pad/trim a GFM delimiter row to match its header's column count.
+
+    Small models routinely emit a header with N cells but a delimiter row with N-1;
+    GFM then rejects the *whole* table and the terminal prints raw pipes. Rebuilding the
+    delimiter — and nothing else — makes the table render. Display-only: the stored
+    message, `/copy` and `/export` keep the model's original text, which real renderers
+    (VS Code, GitHub) will still refuse."""
+    lines = text.split("\n")
+    out: list[str] = []
+    fence = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = _FENCE_RE.match(line)
+        if m:
+            marker = m.group(1)[0]
+            if fence is None:
+                fence = marker
+            elif fence == marker:
+                fence = None
+            out.append(line)
+            i += 1
+            continue
+        if (fence is None and "|" in line and i + 1 < len(lines)
+                and _is_table_separator(lines[i + 1])):
+            cols = len(_split_row(line))
+            if cols and len(_split_row(lines[i + 1])) != cols:
+                out.append(line)
+                out.append("|" + "---|" * cols)
+                i += 2
+                continue
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
 def _rich_render(text: str, width: int) -> str:
     """Render with rich; may raise (a missing rich, a bad message) — the caller falls
     back to the raw text."""
@@ -124,4 +199,4 @@ def render_markdown(text: str, width: int) -> str:
     newline. Returns `text` unchanged if rich is unavailable or rendering raises."""
     if not text:
         return ""
-    return _render_or_raw(text, lambda t: _rich_render(t, width))
+    return _render_or_raw(_normalize_tables(text), lambda t: _rich_render(t, width))

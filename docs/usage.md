@@ -102,3 +102,8 @@ Rendering is **per assistant message**: a message is buffered and drawn once it 
 generating, so a multi-step turn still interleaves each reply with the tool calls that
 follow it. Toggle it at runtime with `/markdown`, or start with it off via
 `CHAD_NO_MARKDOWN=1`.
+
+One tolerant touch, display-only: a table whose delimiter row has a different column count
+than its header (a common small-model slip) is padded/trimmed to the header so the table
+still draws. The stored message keeps the model's original text, which strict renderers
+(GitHub, VS Code) may still reject.
